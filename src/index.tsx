@@ -17,12 +17,12 @@ export interface DispState {
   curAction: number;
 }
 
-const dispReducer = (action: {type: "UPDATE_VIZ_PREVIEW", payload: string}, state: DispState) => {
+const dispReducer = (state: DispState, action: {type: "UPDATE_VIZ_PREVIEW", payload: string}) => {
   if (!action || !state) {
-    return {viz: "", curAction: 0};
+    return {viz: "", curAction: -1};
   }
   if (action.type === "UPDATE_VIZ_PREVIEW") {
-    return {viz: action.payload};
+    return {...state, viz: action.payload};
   }
   if (action.type === "ADVANCE_ACTION") {
     return {...state, curAction: state.curAction + 1};
@@ -34,23 +34,23 @@ const topLevel = combineReducers<{glacier: g.ModelState, display: DispState}>({
 });
 
 const store = createStore(topLevel);
-g.createSvgExporter(store, s => s.glacier, async (e) => {
-  const data = await e.export();
-  store.dispatch({type: "UPDATE_VIZ_PREVIEW", payload: data.svg});
-});
-
 const actions: g.AllActions[] = [];
+let lastAction = -1;
 store.subscribe(() => {
   const nextAction = store.getState().display.curAction;
-  if (nextAction <= actions.length) {
+  if (nextAction > lastAction && nextAction < actions.length) {
+    lastAction = nextAction;
     store.dispatch(actions[nextAction]);
   }
 });
 
-fetch("/data/dji.csv").then(c => c.text()).then(c => {
+fetch("/data/dji.csv").then(c => c.text()).then(async c => {
   const source = g.createCSVDataSource(store, c);
+  await source.updateCache();
   const fields = g.createAddFieldsAction([
-    { name: "Date", dataSource: source.id }, { name: "High", dataSource: source.id }
+    { name: "Date", dataSource: source.id },
+    { name: "High", dataSource: source.id },
+    { name: "Low", dataSource: source.id }
   ]);
   actions.push(...[
     fields,
@@ -65,11 +65,44 @@ fetch("/data/dji.csv").then(c => c.text()).then(c => {
         title: "Dow Jones Indstrial Average"
       }, scale: { type: "log" }
     }),
+    g.createSetFilterAction({type: "GT", left: fields.payload.fields[0], right: `2000-01-01`}),
     g.createUpdateMarkTypeAction("bar"),
-    g.createSetFilterAction({type: "GT", left: fields.payload.fields[0].id, right: +new Date(2000, 1)})
+    g.createUpdateChannelAction("y", {
+      field: fields.payload.fields[1].id, type: "quantitative", axis: {
+        title: "Dow Jones Indstrial Average"
+      }
+    }),
+    g.createUpdateChannelAction("x", {
+      field: fields.payload.fields[0].id, type: "ordinal", axis: { title: "Date" }
+    }),
+    g.createUpdateSizeAction(255, 528),
+    g.createUpdateChannelAction("y", {
+      field: fields.payload.fields[1].id, type: "quantitative", axis: {
+        title: "Dow Jones Indstrial Average"
+      },
+      scale: { domain: [8000, 22000], clamp: true }
+    }),
+    g.createUpdateMarkTypeAction("point"),
+    g.createSetFilterAction({type: "GT", left: fields.payload.fields[0], right: `1990-01-01`}),
+    g.createUpdateMarkTypeAction("line"),
+    g.createUpdateChannelAction("y", {
+      field: fields.payload.fields[1].id, type: "quantitative", axis: {
+        title: "Dow Jones Indstrial Average"
+      },
+      scale: { domain: [0, 22000], clamp: true }
+    }),
+    g.createUpdateChannelAction("x", {
+      field: fields.payload.fields[0].id, type: "temporal", axis: { title: "Date" }, timeUnit: "year"
+    }),
+    g.createUpdateMarkTypeAction("area")
   ]);
+  g.createSvgExporter(store, s => s.glacier, async (e) => {
+      const data = await e.export();
+      if (data.svg !== store.getState().display.viz) {
+        store.dispatch({type: "UPDATE_VIZ_PREVIEW", payload: data.svg});
+      }
+  });
 });
-
 
 ReactDOM.render(
   <Provider store={store}>
